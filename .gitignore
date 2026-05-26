@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Debug session artifacts
+debug-*.log
+capps-debug-*.log
+_git_check.txt
+
+# OS
+.DS_Store
+Thumbs.db
