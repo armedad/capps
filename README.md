@@ -18,7 +18,7 @@ git config --global --add safe.directory X:/capps
 - **Ollama** is the standard local LLM service (port 11434), not a c-app — monitored only; notetaker and others may depend on it
 - **Refresh all** or per-app **Refresh** checks health; actions poll up to **60 seconds** and report success or failure
 - **Start** launches when stopped; **Stop** / **Restart** call each app’s shutdown API where supported
-- **gauth**: Stop/Restart show “not yet implemented” (no gauth changes)
+- **gauth**: Stop/Restart via `POST /api/local/shutdown` (loopback; respects `GAUTH_ALLOW_SHUTDOWN`)
 
 ## Run
 
@@ -42,6 +42,7 @@ Or: `python -m pip install -r requirements.txt` then `python run.py`.
 
 | App | Endpoint | Notes |
 |-----|----------|--------|
+| gauth | `/api/local/shutdown` | Loopback only; disable with `GAUTH_ALLOW_SHUTDOWN=0` |
 | notetaker | `/api/local/shutdown` | Requires `NOTETAKER_LOCAL_SHUTDOWN=1` (set in `start.ps1`) |
 | voice-dictation | `/api/local/shutdown` | Requires combined launcher (`start.bat` / `run_combined_app.py`) |
 
