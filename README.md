@@ -2,6 +2,16 @@
 
 Local launcher page for sibling apps under `X:\` (`\\cc\apps\`).
 
+```bash
+git clone https://github.com/armedad/capps.git
+```
+
+On Windows, prefer `X:\capps` for git (UNC paths can trigger “dubious ownership”). If needed:
+
+```bash
+git config --global --add safe.directory X:/capps
+```
+
 ## What it does
 
 - Serves **http://127.0.0.1:8000/** with links to gauth, notetaker, voice-dictation, and status for **Ollama**
