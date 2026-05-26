@@ -1,0 +1,48 @@
+{
+  "apps": [
+    {
+      "id": "gauth",
+      "name": "gauth",
+      "description": "Gmail OAuth / API / MCP",
+      "port": 4664,
+      "health_path": "/health",
+      "app_dir": "../gauth",
+      "launch_script": "launch.bat",
+      "control": "remote",
+      "shutdown_path": "/api/local/shutdown"
+    },
+    {
+      "id": "notetaker",
+      "name": "notetaker",
+      "description": "Meeting record, transcribe, diarize",
+      "port": 6684,
+      "health_path": "/api/health",
+      "app_dir": "../notetaker",
+      "launch_script": "start.bat",
+      "control": "remote",
+      "shutdown_path": "/api/local/shutdown"
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "description": "Standard Ollama LLM (not a c-app; notetaker and others may depend on it)",
+      "port": 11434,
+      "health_path": "/api/tags",
+      "app_dir": ".",
+      "launch_script": "",
+      "control": "stub",
+      "external": true
+    },
+    {
+      "id": "voice-dictation",
+      "name": "voice-dictation",
+      "description": "Hotkey dictation → STT → type",
+      "port": 8946,
+      "health_path": "/health",
+      "app_dir": "../voice-dictation",
+      "launch_script": "start.bat",
+      "control": "remote",
+      "shutdown_path": "/api/local/shutdown"
+    }
+  ]
+}

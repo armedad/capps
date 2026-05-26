@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 CAPPS_DIR = Path(__file__).resolve().parent.parent
+
+_REQUIRED_FIELDS = (
+    "id",
+    "name",
+    "description",
+    "port",
+    "health_path",
+    "app_dir",
+    "launch_script",
+    "control",
+)
 
 
 def _map_unc_apps_path(path: Path) -> Path:
@@ -23,14 +34,21 @@ def _map_unc_apps_path(path: Path) -> Path:
     return path
 
 
-def _default_apps_root() -> Path:
-    env = os.environ.get("CHEEAPPS_ROOT", "").strip()
+def _config_path() -> Path:
+    env = os.environ.get("CAPPS_APPS_CONFIG", "").strip()
     if env:
-        return _map_unc_apps_path(Path(env))
-    return _map_unc_apps_path(CAPPS_DIR.parent)
+        return Path(env)
+    return CAPPS_DIR / "apps.json"
 
 
-APPS_ROOT = _default_apps_root()
+def _resolve_under_capps(rel: str) -> Path:
+    p = Path(rel)
+    if p.is_absolute():
+        resolved = p.resolve()
+    else:
+        resolved = (CAPPS_DIR / p).resolve()
+    return _map_unc_apps_path(resolved)
+
 
 ControlKind = Literal["remote", "stub"]
 
@@ -58,57 +76,74 @@ def _ollama_health_url() -> str:
     return f"{_ollama_base_url()}/api/tags"
 
 
-def _app_dir(name: str) -> Path:
-    return APPS_ROOT / name
+def _parse_app_entry(raw: dict[str, Any], *, source: str) -> AppDef:
+    missing = [f for f in _REQUIRED_FIELDS if f not in raw]
+    if missing:
+        raise ValueError(f"{source}: missing required fields: {', '.join(missing)}")
+
+    app_id = str(raw["id"])
+    control = raw["control"]
+    if control not in ("remote", "stub"):
+        raise ValueError(f"{source} id={app_id!r}: control must be 'remote' or 'stub'")
+
+    external = bool(raw.get("external", False))
+    launch_script = str(raw["launch_script"])
+    app_dir = _resolve_under_capps(str(raw["app_dir"]))
+
+    health_url = raw.get("health_url")
+    if health_url is not None:
+        health_url = str(health_url).strip() or None
+    elif external and app_id == "ollama":
+        health_url = _ollama_health_url()
+
+    shutdown_path = raw.get("shutdown_path")
+    if shutdown_path is not None:
+        shutdown_path = str(shutdown_path).strip() or None
+
+    return AppDef(
+        id=app_id,
+        name=str(raw["name"]),
+        description=str(raw["description"]),
+        port=int(raw["port"]),
+        health_path=str(raw["health_path"]),
+        app_dir=app_dir,
+        launch_script=launch_script,
+        control=control,
+        shutdown_path=shutdown_path,
+        health_url=health_url,
+        external=external,
+    )
 
 
-APPS: tuple[AppDef, ...] = (
-    AppDef(
-        id="gauth",
-        name="gauth",
-        description="Gmail OAuth / API / MCP",
-        port=4664,
-        health_path="/health",
-        app_dir=_app_dir("gauth"),
-        launch_script="launch-startup.bat",
-        control="remote",
-        shutdown_path="/api/local/shutdown",
-    ),
-    AppDef(
-        id="notetaker",
-        name="notetaker",
-        description="Meeting record, transcribe, diarize",
-        port=6684,
-        health_path="/api/health",
-        app_dir=_app_dir("notetaker"),
-        launch_script="start.bat",
-        control="remote",
-        shutdown_path="/api/local/shutdown",
-    ),
-    AppDef(
-        id="ollama",
-        name="Ollama",
-        description="Standard Ollama LLM (not a c-app; notetaker and others may depend on it)",
-        port=11434,
-        health_path="/api/tags",
-        app_dir=CAPPS_DIR,
-        launch_script="",
-        control="stub",
-        health_url=_ollama_health_url(),
-        external=True,
-    ),
-    AppDef(
-        id="voice-dictation",
-        name="voice-dictation",
-        description="Hotkey dictation → STT → type",
-        port=8946,
-        health_path="/health",
-        app_dir=_app_dir("voice-dictation"),
-        launch_script="start.bat",
-        control="remote",
-        shutdown_path="/api/local/shutdown",
-    ),
-)
+def _load_apps_from_json(path: Path) -> tuple[AppDef, ...]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Apps config not found: {path}")
+
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    apps_raw = data.get("apps")
+    if not isinstance(apps_raw, list):
+        raise ValueError(f"{path}: 'apps' must be an array")
+
+    seen: set[str] = set()
+    apps: list[AppDef] = []
+    for i, entry in enumerate(apps_raw):
+        source = f"{path} apps[{i}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{source}: must be an object")
+        app = _parse_app_entry(entry, source=source)
+        if app.id in seen:
+            raise ValueError(f"{path}: duplicate app id {app.id!r}")
+        seen.add(app.id)
+        apps.append(app)
+
+    return tuple(apps)
+
+
+APPS: tuple[AppDef, ...] = _load_apps_from_json(_config_path())
 
 APPS_BY_ID = {a.id: a for a in APPS}
 

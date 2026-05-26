@@ -48,5 +48,13 @@ Or: `python -m pip install -r requirements.txt` then `python run.py`.
 
 Restart = shutdown, brief wait, then `start.bat` again via capps.
 
-Set `CHEEAPPS_ROOT` if apps live somewhere other than the parent of `capps` (default `X:\`).
-Set `OLLAMA_URL` if Ollama is not on `http://127.0.0.1:11434`.
+## App configuration
+
+Apps are defined in [`apps.json`](apps.json) at the capps repo root. Each entry’s `app_dir` is resolved relative to the capps directory (where `run.py` lives), e.g. `../gauth` for a sibling folder next to `capps`.
+
+To add or change an app, edit `apps.json` and restart capps.
+
+| Env var | Purpose |
+|---------|---------|
+| `CAPPS_APPS_CONFIG` | Path to an alternate apps JSON file |
+| `OLLAMA_URL` | Ollama base URL if not `http://127.0.0.1:11434` |
