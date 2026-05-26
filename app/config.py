@@ -71,7 +71,8 @@ APPS: tuple[AppDef, ...] = (
         health_path="/health",
         app_dir=_app_dir("gauth"),
         launch_script="launch-startup.bat",
-        control="stub",
+        control="remote",
+        shutdown_path="/api/local/shutdown",
     ),
     AppDef(
         id="notetaker",
