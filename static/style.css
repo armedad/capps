@@ -214,12 +214,31 @@ button.primary:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
+button.debug {
+  border-color: #5a6d8a;
+  color: #c5d4e8;
+}
+
+button.debug:hover:not(:disabled) {
+  background: #2d3d56;
+  border-color: #6cb6ff;
+}
+
 footer {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 #updated {

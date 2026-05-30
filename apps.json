@@ -8,6 +8,10 @@
       "health_path": "/health",
       "app_dir": "../gauth",
       "launch_script": "launch.bat",
+      "launch_args": "--background",
+      "start_debug": {
+        "launch_script": "launch.bat"
+      },
       "control": "remote",
       "shutdown_path": "/api/local/shutdown"
     },
@@ -19,6 +23,10 @@
       "health_path": "/api/health",
       "app_dir": "../notetaker",
       "launch_script": "start.bat",
+      "launch_args": "--background",
+      "start_debug": {
+        "launch_script": "start.bat"
+      },
       "control": "remote",
       "shutdown_path": "/api/local/shutdown"
     },
@@ -41,8 +49,29 @@
       "health_path": "/health",
       "app_dir": "../voice-dictation",
       "launch_script": "start.bat",
+      "launch_args": "--background",
+      "start_debug": {
+        "launch_args": "--skip-hotkey-agent --reload"
+      },
       "control": "remote",
       "shutdown_path": "/api/local/shutdown"
+    },
+    {
+      "id": "cursor-agent-telegram",
+      "name": "cursor-agent Telegram",
+      "description": "Telegram → local Cursor agent (long polling)",
+      "port": 0,
+      "health_path": "",
+      "health_probe": "process",
+      "process_match": "-m cursor_chat.telegram_bot",
+      "app_dir": "../cursor-agent",
+      "launch_script": "telegram_bot-background.bat",
+      "start_debug": {
+        "launch_script": "telegram_bot.bat",
+        "launch_args": "--verbose"
+      },
+      "control": "script",
+      "stop_script": "telegram_bot-stop.bat"
     }
   ]
 }

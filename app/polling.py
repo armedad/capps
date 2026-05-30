@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import httpx
 
-from app.config import AppDef
+from app.config import AppDef, health_check_label
 
 POLL_TIMEOUT_SEC = 60.0
 POLL_INTERVAL_SEC = 1.0
@@ -24,29 +25,70 @@ class PollOutcome:
 
 
 def _health_probe_url(app_def: AppDef) -> str:
-    if app_def.health_url:
-        return app_def.health_url
-    return f"http://127.0.0.1:{app_def.port}{app_def.health_path}"
+    return health_check_label(app_def)
+
+
+async def _probe_process(app_def: AppDef) -> tuple[bool, dict]:
+    match = app_def.process_match or ""
+    if not match:
+        return False, {"reachable": True, "running": False, "health_probe": "process"}
+
+    if sys.platform == "win32":
+        escaped = match.replace("'", "''")
+        # Only match Python interpreters — the probe's own PowerShell command line
+        # contains the search string and would otherwise always look "running".
+        ps = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { "
+            "($_.Name -eq 'python.exe' -or $_.Name -like 'python3*.exe') "
+            f"-and $_.CommandLine -match '{escaped}' "
+            "} | "
+            "Select-Object -First 1 -ExpandProperty ProcessId"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            ps,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            "pgrep",
+            "-f",
+            match,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+    stdout, _ = await proc.communicate()
+    running = proc.returncode == 0 and bool(stdout.strip())
+    return running, {"reachable": True, "running": running, "health_probe": "process"}
 
 
 async def _probe_raw(app_def: AppDef) -> tuple[bool | None, dict]:
     """Return (running, fields). running=None means could not reach the health endpoint."""
+    if app_def.health_probe == "process":
+        running, extra = await _probe_process(app_def)
+        return running, extra
+
     url = _health_probe_url(app_def)
     try:
         async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT) as client:
             resp = await client.get(url)
             running = resp.status_code == 200
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
-        return None, {"reachable": False, "running": False}
+        return None, {"reachable": False, "running": False, "health_probe": "http"}
 
-    return running, {"reachable": True, "running": running}
+    return running, {"reachable": True, "running": running, "health_probe": "http"}
 
 
 async def probe_app(app_def: AppDef, status_fields: dict) -> dict:
-    running, _extra = await _probe_raw(app_def)
+    running, extra = await _probe_raw(app_def)
     if running is None:
         running = False
-    return {**status_fields, "running": running}
+    return {**status_fields, "running": running, **extra}
 
 
 async def wait_for_condition(
