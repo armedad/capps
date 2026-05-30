@@ -1,6 +1,14 @@
 const appsEl = document.getElementById("apps");
 const refreshAllBtn = document.getElementById("refresh");
+const startAllBtn = document.getElementById("start-all");
+const stopAllBtn = document.getElementById("stop-all");
 const updatedEl = document.getElementById("updated");
+const footerButtons = () => [
+  refreshAllBtn,
+  startAllBtn,
+  stopAllBtn,
+  ...appsEl.querySelectorAll(".app-card button"),
+];
 
 const NOT_IMPLEMENTED = "not yet implemented";
 const POLL_HINT = " (up to 60s)";
@@ -77,20 +85,38 @@ function handleActionResponse(data) {
   }
 }
 
+function appTitleHtml(app) {
+  if (app.external) {
+    return `<h2>${escapeHtml(app.name)} <span class="badge">dependency</span></h2>`;
+  }
+  if (app.url) {
+    return `<h2><a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.name)}</a></h2>`;
+  }
+  return `<h2>${escapeHtml(app.name)}</h2>`;
+}
+
+function appMetaHtml(app) {
+  const health = escapeHtml(app.health_check_url || "");
+  if (app.health_probe === "process" || !app.url) {
+    return `<p class="app-meta health-check"><span>${health}</span></p>`;
+  }
+  if (app.external) {
+    return `<p class="app-meta">Port ${app.port} · <span>${health}</span></p>`;
+  }
+  return `<p class="app-meta">Port ${app.port} · <a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.url)}</a></p>`;
+}
+
 function renderCard(app) {
   const li = document.createElement("li");
   li.className = `app-card${app.external ? " external" : ""}`;
   li.dataset.appId = app.id;
 
   const st = statusLabel(app);
-  const title = app.external
-    ? `<h2>${escapeHtml(app.name)} <span class="badge">dependency</span></h2>`
-    : `<h2><a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.name)}</a></h2>`;
 
   li.innerHTML = `
-    ${title}
+    ${appTitleHtml(app)}
     <p class="app-desc">${escapeHtml(app.description)}</p>
-    <p class="app-meta">Port ${app.port} · ${app.external ? `<span>${escapeHtml(app.health_check_url || app.url)}</span>` : `<a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.url)}</a>`}</p>
+    ${appMetaHtml(app)}
     <p class="app-result" data-role="result"></p>
     <div class="app-actions">
       <span class="status ${st.class}" data-role="status">${st.text}</span>
@@ -113,6 +139,15 @@ function renderCard(app) {
     startBtn.textContent = "Start";
     startBtn.addEventListener("click", () => action("start", app.id, startBtn));
     buttons.appendChild(startBtn);
+  }
+
+  if (app.running === false && app.start_debug_available) {
+    const debugBtn = document.createElement("button");
+    debugBtn.type = "button";
+    debugBtn.className = "debug";
+    debugBtn.textContent = "Start debug";
+    debugBtn.addEventListener("click", () => action("start-debug", app.id, debugBtn));
+    buttons.appendChild(debugBtn);
   }
 
   const stopBtn = document.createElement("button");
@@ -150,6 +185,25 @@ function updateCard(app) {
   } else if (app.running !== false && existingStart) {
     existingStart.remove();
   }
+
+  const existingDebug = buttons.querySelector("button.debug");
+  if (app.running === false && app.start_debug_available && !existingDebug) {
+    const debugBtn = document.createElement("button");
+    debugBtn.type = "button";
+    debugBtn.className = "debug";
+    debugBtn.textContent = "Start debug";
+    debugBtn.addEventListener("click", () => action("start-debug", app.id, debugBtn));
+    const startBtn = buttons.querySelector("button.primary");
+    if (startBtn && startBtn.nextSibling) {
+      buttons.insertBefore(debugBtn, startBtn.nextSibling);
+    } else if (startBtn) {
+      buttons.appendChild(debugBtn);
+    } else {
+      buttons.insertBefore(debugBtn, buttons.children[1] || null);
+    }
+  } else if ((app.running !== false || !app.start_debug_available) && existingDebug) {
+    existingDebug.remove();
+  }
 }
 
 function renderAll() {
@@ -178,10 +232,59 @@ async function refreshOne(id, btn) {
   }
 }
 
+function summarizeBulk(action, results) {
+  const started = results.filter((r) => r.action === "start" && r.success && !r.skipped).length;
+  const skipped = results.filter((r) => r.skipped).length;
+  const failed = results.filter((r) => !r.success && !r.skipped).length;
+  const parts = [];
+  if (action === "start-all") {
+    if (started) parts.push(`${started} started`);
+    if (skipped) parts.push(`${skipped} skipped`);
+  } else {
+    const stopped = results.filter((r) => r.action === "stop" && r.success && !r.skipped).length;
+    if (stopped) parts.push(`${stopped} stopped`);
+    if (skipped) parts.push(`${skipped} skipped`);
+  }
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(", ") || "Nothing to do";
+}
+
+async function bulkAction(kind, btn) {
+  const paths = {
+    "start-all": "/api/apps/start-all",
+    "stop-all": "/api/apps/stop-all",
+  };
+  const labels = {
+    "start-all": `Starting all${POLL_HINT}…`,
+    "stop-all": `Stopping all${POLL_HINT}…`,
+  };
+
+  footerButtons().forEach((b) => { b.disabled = true; });
+  const prev = btn.textContent;
+  btn.textContent = labels[kind];
+  try {
+    const data = await fetchJson(paths[kind], { method: "POST" });
+    for (const app of data.apps || []) applyAppData(app);
+    for (const r of data.results || []) {
+      if (r.message) showResult(r.id, r.success !== false, r.message);
+    }
+    updatedEl.textContent = `${summarizeBulk(kind, data.results || [])} · ${new Date().toLocaleTimeString()}`;
+    const failures = (data.results || []).filter((r) => !r.success && !r.skipped);
+    if (failures.length) {
+      alert(
+        failures.map((r) => `${r.id}: ${r.message}`).join("\n") || "Some actions failed",
+      );
+    }
+  } catch (err) {
+    alert(err.message || String(err));
+  } finally {
+    footerButtons().forEach((b) => { b.disabled = false; });
+    btn.textContent = prev;
+  }
+}
+
 async function refreshAll() {
-  const cardButtons = [...appsEl.querySelectorAll(".app-card button")];
-  refreshAllBtn.disabled = true;
-  cardButtons.forEach((b) => { b.disabled = true; });
+  footerButtons().forEach((b) => { b.disabled = true; });
   refreshAllBtn.textContent = `Checking all${POLL_HINT}…`;
   try {
     const { apps, results } = await fetchJson("/api/apps");
@@ -195,9 +298,8 @@ async function refreshAll() {
   } catch (err) {
     appsEl.innerHTML = `<li class="app-card"><p>Error: ${escapeHtml(err.message)}</p></li>`;
   } finally {
-    refreshAllBtn.disabled = false;
+    footerButtons().forEach((b) => { b.disabled = false; });
     refreshAllBtn.textContent = "Refresh all";
-    cardButtons.forEach((b) => { b.disabled = false; });
   }
 }
 
@@ -208,17 +310,23 @@ async function action(kind, id, btn) {
     return;
   }
   if (app?.stop_stub && (kind === "stop" || kind === "restart")) {
+    alert(app.external ? "Not managed from this dashboard (external service)" : NOT_IMPLEMENTED);
+    return;
+  }
+  if ((kind === "stop" || kind === "restart") && app && !app.stop_available) {
     alert(NOT_IMPLEMENTED);
     return;
   }
 
   const labels = {
     start: `Starting${POLL_HINT}…`,
+    "start-debug": `Starting debug${POLL_HINT}…`,
     stop: `Stopping${POLL_HINT}…`,
     restart: `Restarting${POLL_HINT}…`,
   };
   const paths = {
     start: `/api/apps/${id}/start`,
+    "start-debug": `/api/apps/${id}/start-debug`,
     stop: `/api/apps/${id}/stop`,
     restart: `/api/apps/${id}/restart`,
   };
@@ -246,6 +354,8 @@ async function action(kind, id, btn) {
 }
 
 refreshAllBtn.addEventListener("click", refreshAll);
+startAllBtn.addEventListener("click", () => bulkAction("start-all", startAllBtn));
+stopAllBtn.addEventListener("click", () => bulkAction("stop-all", stopAllBtn));
 
 async function init() {
   try {
@@ -254,6 +364,7 @@ async function init() {
       appState.set(app.id, { ...app, running: null });
     }
     renderAll();
+    await refreshAll();
   } catch (err) {
     appsEl.innerHTML = `<li class="app-card"><p>Error: ${escapeHtml(err.message)}</p></li>`;
   }
