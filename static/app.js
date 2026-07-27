@@ -2,6 +2,7 @@ const appsEl = document.getElementById("apps");
 const refreshAllBtn = document.getElementById("refresh");
 const startAllBtn = document.getElementById("start-all");
 const stopAllBtn = document.getElementById("stop-all");
+const stopServerBtn = document.getElementById("stop-server");
 const updatedEl = document.getElementById("updated");
 const footerButtons = () => [
   refreshAllBtn,
@@ -33,6 +34,14 @@ function escapeHtml(s) {
 }
 
 function statusLabel(app) {
+  if (app.failover_status) {
+    const active = app.failover?.active_instance;
+    if (app.running) {
+      const cls = active === "backup" ? "up-backup" : "up";
+      return { class: cls, text: app.failover_status };
+    }
+    return { class: "down", text: app.failover_status };
+  }
   if (app.running === undefined || app.running === null) {
     return { class: "unknown", text: "Unknown" };
   }
@@ -89,10 +98,13 @@ function appTitleHtml(app) {
   if (app.external) {
     return `<h2>${escapeHtml(app.name)} <span class="badge">dependency</span></h2>`;
   }
+  const failoverBadge = app.failover_managed
+    ? ' <span class="badge failover">failover</span>'
+    : "";
   if (app.url) {
-    return `<h2><a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.name)}</a></h2>`;
+    return `<h2><a href="${app.url}" target="_blank" rel="noopener">${escapeHtml(app.name)}</a>${failoverBadge}</h2>`;
   }
-  return `<h2>${escapeHtml(app.name)}</h2>`;
+  return `<h2>${escapeHtml(app.name)}${failoverBadge}</h2>`;
 }
 
 function appMetaHtml(app) {
@@ -353,9 +365,46 @@ async function action(kind, id, btn) {
   }
 }
 
+async function stopServer() {
+  if (
+    !confirm(
+      "Stop the c-apps server and exit start.bat?\n\n(Your PowerShell or cmd window that launched start.bat will stay open.)",
+    )
+  ) {
+    return;
+  }
+  stopServerBtn.disabled = true;
+  stopServerBtn.textContent = "Stopping…";
+  try {
+    const res = await fetch("/api/local/shutdown", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const detail =
+        typeof err.detail === "string"
+          ? err.detail
+          : Array.isArray(err.detail)
+            ? err.detail.map((d) => d.msg || d).join("; ")
+            : res.statusText;
+      alert(detail || "Stop server is not available.");
+      stopServerBtn.disabled = false;
+      stopServerBtn.textContent = "Stop server";
+    }
+  } catch (err) {
+    alert(err.message || String(err));
+    stopServerBtn.disabled = false;
+    stopServerBtn.textContent = "Stop server";
+  }
+}
+
 refreshAllBtn.addEventListener("click", refreshAll);
 startAllBtn.addEventListener("click", () => bulkAction("start-all", startAllBtn));
 stopAllBtn.addEventListener("click", () => bulkAction("stop-all", stopAllBtn));
+stopServerBtn.addEventListener("click", stopServer);
 
 async function init() {
   try {

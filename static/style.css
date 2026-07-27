@@ -50,6 +50,11 @@ header h1 {
   border-color: #3d4a5c;
 }
 
+.app-card .badge.failover {
+  color: #e6b84d;
+  border-color: #6a5730;
+}
+
 .app-card .badge {
   font-size: 0.65rem;
   font-weight: 600;
@@ -137,6 +142,10 @@ header h1 {
 
 .status.up {
   color: var(--up);
+}
+
+.status.up-backup {
+  color: #e6b84d;
 }
 
 .status.down {
@@ -243,4 +252,23 @@ footer {
 
 #updated {
   font-variant-numeric: tabular-nums;
+}
+
+.server-footer {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+button.danger {
+  border-color: #8b3a42;
+  background: #3a2228;
+  color: #f5c2c7;
+}
+
+button.danger:hover:not(:disabled) {
+  background: #4a2a32;
+  border-color: var(--down);
 }

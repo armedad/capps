@@ -5,7 +5,7 @@ cd /d "%~dp0"
 where python >nul 2>nul
 if %ERRORLEVEL% neq 0 (
     echo Error: Python not found.
-    pause
+    if /I not "%~1"=="--startup" pause
     exit /b 1
 )
 
@@ -18,8 +18,13 @@ if %ERRORLEVEL% neq 0 (
 echo.
 echo   c-apps dashboard
 echo   Open: http://127.0.0.1:8000/
-echo   Press Ctrl+C to stop
+if /I "%~1"=="--startup" (
+    echo   Startup mode: will start managed apps as needed
+) else (
+    echo   Press Ctrl+C to stop, or use Stop server on the dashboard
+)
+echo   Stop ^(when running^): POST http://127.0.0.1:8000/api/local/shutdown ^(loopback only^)
 echo.
 
-python run.py
-pause
+python run.py %*
+if /I not "%~1"=="--startup" pause

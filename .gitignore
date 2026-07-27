@@ -5,10 +5,14 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
-# Debug session artifacts
-debug-*.log
-capps-debug-*.log
-_git_check.txt
+# Runtime / personal data (never commit)
+*.log
+*.txt
+/user/
+/users/
+users/
+logs/
+*.pid
 
 # OS
 .DS_Store

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -12,10 +15,20 @@ from app.config import (
     APPS,
     APPS_BY_ID,
     CAPPS_DIR,
+    DASHBOARD_APPS,
     EXTERNAL_MSG,
+    FAILOVER_BY_PRIMARY_ID,
     NOT_IMPLEMENTED_MSG,
     app_service_url,
     health_check_label,
+)
+from app.failover_actions import (
+    failover_group_for_app,
+    perform_failover_restart,
+    perform_failover_start,
+    perform_failover_stop,
+    primary_app_id,
+    refresh_failover_app,
 )
 from app.launcher import launch_app, run_script
 from app.polling import (
@@ -24,11 +37,73 @@ from app.polling import (
     probe_app,
     wait_for_condition,
 )
+from app.watchdog import watchdog
+from app.routers.local_shutdown import router as local_shutdown_router
+from app.routers.failover import router as failover_router
 
 STATIC_DIR = CAPPS_DIR / "static"
 HEALTH_TIMEOUT = 2.0
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="c-apps", description="Local apps dashboard")
+
+def _startup_mode_enabled() -> bool:
+    return os.environ.get("CAPPS_STARTUP", "").lower() in ("1", "true", "yes")
+
+
+async def ensure_all_apps_running() -> dict:
+    """Start every manageable app that is not already running (no restarts)."""
+    results: list[dict] = []
+    for app_def in DASHBOARD_APPS:
+        if not app_def.autostart:
+            continue
+        try:
+            if failover_group_for_app(app_def.id):
+                results.append(await perform_failover_start(app_def))
+            else:
+                results.append(await _perform_start(app_def))
+        except HTTPException as exc:
+            fields = _app_status_fields(app_def)
+            results.append(
+                {
+                    "id": app_def.id,
+                    "action": "start",
+                    "success": False,
+                    "message": str(exc.detail),
+                    "app": await probe_app(app_def, fields),
+                }
+            )
+    return {
+        "action": "start-all",
+        "apps": [r["app"] for r in results],
+        "results": results,
+    }
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if _startup_mode_enabled():
+        logger.info("Startup mode: ensuring managed apps are running")
+        outcome = await ensure_all_apps_running()
+        for result in outcome["results"]:
+            app_id = result["id"]
+            if result.get("skipped") and result.get("success"):
+                logger.info("%s: %s", app_id, result.get("message", "skipped"))
+            elif result.get("success"):
+                logger.info("%s: started", app_id)
+            else:
+                logger.warning(
+                    "%s: failed — %s",
+                    app_id,
+                    result.get("message", "unknown error"),
+                )
+    await watchdog.start()
+    yield
+    await watchdog.stop()
+
+
+app = FastAPI(title="c-apps", description="Local apps dashboard", lifespan=lifespan)
+app.include_router(local_shutdown_router, prefix="/api")
+app.include_router(failover_router, prefix="/api")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -46,7 +121,7 @@ def _app_status_fields(app_def) -> dict:
     script_stop = app_def.control == "script" and bool(app_def.stop_script)
     stop_available = remote_stop or script_stop
     stub_controls = app_def.control == "stub" or app_def.external
-    return {
+    fields = {
         "id": app_def.id,
         "name": app_def.name,
         "description": app_def.description,
@@ -61,6 +136,9 @@ def _app_status_fields(app_def) -> dict:
         "restart_available": stop_available,
         "stop_stub": stub_controls,
     }
+    if app_def.id in FAILOVER_BY_PRIMARY_ID:
+        fields["failover_managed"] = True
+    return fields
 
 
 async def _remote_shutdown(app_def) -> None:
@@ -102,10 +180,20 @@ async def _shutdown_app(app_def) -> None:
 
 async def _refresh_app(app_def) -> dict:
     fields = _app_status_fields(app_def)
+    if failover_group_for_app(app_def.id):
+        return await refresh_failover_app(app_def, fields)
     outcome = await wait_for_condition(
         app_def, fields, goal_running=None, action="refresh"
     )
     return outcome_response(app_def.id, "refresh", outcome)
+
+
+def _resolve_api_app(app_id: str):
+    app_id = primary_app_id(app_id)
+    app_def = APPS_BY_ID.get(app_id)
+    if not app_def:
+        raise HTTPException(status_code=404, detail="Unknown app")
+    return app_def
 
 
 def _can_manage_start(app_def, fields: dict) -> bool:
@@ -268,20 +356,18 @@ async def index():
 @app.get("/api/apps/catalog")
 async def catalog_apps():
     """App list without health probes (for initial dashboard layout)."""
-    return {"apps": [_app_status_fields(a) for a in APPS]}
+    return {"apps": [_app_status_fields(a) for a in DASHBOARD_APPS]}
 
 
 @app.get("/api/apps")
 async def list_apps():
-    results = await asyncio.gather(*(_refresh_app(a) for a in APPS))
+    results = await asyncio.gather(*(_refresh_app(a) for a in DASHBOARD_APPS))
     return {"apps": [r["app"] for r in results], "results": results}
 
 
 @app.get("/api/apps/{app_id}")
 async def get_app(app_id: str):
-    app_def = APPS_BY_ID.get(app_id)
-    if not app_def:
-        raise HTTPException(status_code=404, detail="Unknown app")
+    app_def = _resolve_api_app(app_id)
     return await _refresh_app(app_def)
 
 
@@ -297,9 +383,9 @@ def _external_response(app_id: str, action: str) -> dict:
 
 @app.post("/api/apps/{app_id}/start")
 async def start_app(app_id: str):
-    app_def = APPS_BY_ID.get(app_id)
-    if not app_def:
-        raise HTTPException(status_code=404, detail="Unknown app")
+    app_def = _resolve_api_app(app_id)
+    if failover_group_for_app(app_def.id):
+        return await perform_failover_start(app_def)
     return await _perform_start(app_def)
 
 
@@ -314,33 +400,14 @@ async def start_debug_app(app_id: str):
 @app.post("/api/apps/start-all")
 async def start_all_apps():
     """Start every manageable app that is not already running (no restarts)."""
-    results: list[dict] = []
-    for app_def in APPS:
-        try:
-            results.append(await _perform_start(app_def))
-        except HTTPException as exc:
-            fields = _app_status_fields(app_def)
-            results.append(
-                {
-                    "id": app_def.id,
-                    "action": "start",
-                    "success": False,
-                    "message": str(exc.detail),
-                    "app": await probe_app(app_def, fields),
-                }
-            )
-    return {
-        "action": "start-all",
-        "apps": [r["app"] for r in results],
-        "results": results,
-    }
+    return await ensure_all_apps_running()
 
 
 @app.post("/api/apps/{app_id}/stop")
 async def stop_app(app_id: str):
-    app_def = APPS_BY_ID.get(app_id)
-    if not app_def:
-        raise HTTPException(status_code=404, detail="Unknown app")
+    app_def = _resolve_api_app(app_id)
+    if failover_group_for_app(app_def.id):
+        return await perform_failover_stop(app_def)
     return await _perform_stop(app_def)
 
 
@@ -348,9 +415,12 @@ async def stop_app(app_id: str):
 async def stop_all_apps():
     """Stop every manageable app that is currently running."""
     results: list[dict] = []
-    for app_def in APPS:
+    for app_def in DASHBOARD_APPS:
         try:
-            results.append(await _perform_stop(app_def))
+            if failover_group_for_app(app_def.id):
+                results.append(await perform_failover_stop(app_def))
+            else:
+                results.append(await _perform_stop(app_def))
         except HTTPException as exc:
             fields = _app_status_fields(app_def)
             results.append(
@@ -371,9 +441,7 @@ async def stop_all_apps():
 
 @app.post("/api/apps/{app_id}/restart")
 async def restart_app(app_id: str):
-    app_def = APPS_BY_ID.get(app_id)
-    if not app_def:
-        raise HTTPException(status_code=404, detail="Unknown app")
+    app_def = _resolve_api_app(app_id)
 
     if app_def.external or app_def.control == "stub":
         return {
@@ -383,6 +451,9 @@ async def restart_app(app_id: str):
             "not_implemented": True,
             "message": EXTERNAL_MSG if app_def.external else NOT_IMPLEMENTED_MSG,
         }
+
+    if failover_group_for_app(app_def.id):
+        return await perform_failover_restart(app_def)
 
     fields = _app_status_fields(app_def)
     initial = await probe_app(app_def, fields)

@@ -1,4 +1,14 @@
 {
+  "failover_groups": [
+    {
+      "id": "cursor-agent-telegram",
+      "primary_id": "cursor-agent-telegram",
+      "backup_id": "cursor-agent-telegram-backup",
+      "interval_sec": 3600,
+      "fail_threshold": 2,
+      "failback_threshold": 2
+    }
+  ],
   "apps": [
     {
       "id": "gauth",
@@ -22,10 +32,10 @@
       "port": 6684,
       "health_path": "/api/health",
       "app_dir": "../notetaker",
-      "launch_script": "start.bat",
-      "launch_args": "--background",
+      "launch_script": "notetaker.bat",
       "start_debug": {
-        "launch_script": "start.bat"
+        "launch_script": "notetaker.bat",
+        "launch_args": "--debug"
       },
       "control": "remote",
       "shutdown_path": "/api/local/shutdown"
@@ -59,10 +69,10 @@
     {
       "id": "cursor-agent-telegram",
       "name": "cursor-agent Telegram",
-      "description": "Telegram → local Cursor agent (long polling)",
-      "port": 0,
-      "health_path": "",
-      "health_probe": "process",
+      "description": "Telegram + HA webhook → local Cursor agent",
+      "port": 8947,
+      "health_path": "/health",
+      "health_probe": "http",
       "process_match": "-m cursor_chat.telegram_bot",
       "app_dir": "../cursor-agent",
       "launch_script": "telegram_bot-background.bat",
@@ -70,8 +80,23 @@
         "launch_script": "telegram_bot.bat",
         "launch_args": "--verbose"
       },
-      "control": "script",
+      "control": "remote",
+      "shutdown_path": "/api/local/shutdown",
       "stop_script": "telegram_bot-stop.bat"
+    },
+    {
+      "id": "cursor-agent-telegram-backup",
+      "name": "cursor-agent Telegram (backup)",
+      "description": "Stable failover clone; capps starts this only when primary is down",
+      "port": 8947,
+      "health_path": "/health",
+      "health_probe": "http",
+      "process_match": "-m cursor_chat.telegram_bot",
+      "app_dir": "../cursor-agent-backup",
+      "launch_script": "telegram_bot-background.bat",
+      "control": "script",
+      "stop_script": "telegram_bot-stop.bat",
+      "autostart": false
     }
   ]
 }

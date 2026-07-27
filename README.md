@@ -48,5 +48,24 @@ Or: `python -m pip install -r requirements.txt` then `python run.py`.
 
 Restart = shutdown, brief wait, then the app’s launch script again via capps (notetaker: `notetaker.bat`).
 
+## Failover watchdog
+
+When `apps.json` defines `failover_groups`, capps polls the **primary** app on an interval (default **1 hour**). After consecutive failed health checks (default 2), it starts the **backup** app and stops using the primary until failback.
+
+- **cursor-agent Telegram**: primary `../cursor-agent`, backup `../cursor-agent-backup` (stable tag; see `BACKUP.md` there).
+- Backup has `"autostart": false` — not started on dashboard **Start all** or `CAPPS_STARTUP`.
+- Only one instance should run (same port 8947 / Telegram token).
+- Disable polling with `CAPPS_WATCHDOG=0`.
+
+**Temporary faster checks** (loopback only):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/failover/schedule \
+  -H "Content-Type: application/json" \
+  -d "{\"every_minutes\": 5, \"for_hours\": 2}"
+```
+
+Also accepts `interval_sec` + `duration_sec`, optional `group_id`. Reverts automatically when the duration expires. `GET /api/failover/schedule` shows active overrides; `DELETE /api/failover/schedule` clears them early.
+
 Set `CHEEAPPS_ROOT` if apps live somewhere other than the parent of `capps` (default `X:\`).
 Set `OLLAMA_URL` if Ollama is not on `http://127.0.0.1:11434`.
