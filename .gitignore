@@ -14,6 +14,9 @@ users/
 logs/
 *.pid
 
+# Local catalog overlay (not shipped)
+apps.local.json
+
 # OS
 .DS_Store
 Thumbs.db

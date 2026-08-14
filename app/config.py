@@ -42,6 +42,41 @@ def _config_path() -> Path:
     return CAPPS_DIR / "apps.json"
 
 
+def _local_config_path() -> Path:
+    return CAPPS_DIR / "apps.local.json"
+
+
+def _disabled_app_ids() -> frozenset[str]:
+    """Optional gitignored overlay: {"disabled_app_ids": ["notetaker", ...]}."""
+    path = _local_config_path()
+    if not path.is_file():
+        return frozenset()
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    raw = data.get("disabled_app_ids", [])
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: 'disabled_app_ids' must be an array")
+    return frozenset(str(item).strip() for item in raw if str(item).strip())
+
+
+def _apply_local_disabled(
+    apps: tuple[AppDef, ...], groups: tuple[FailoverGroup, ...]
+) -> tuple[tuple[AppDef, ...], tuple[FailoverGroup, ...]]:
+    disabled = _disabled_app_ids()
+    if not disabled:
+        return apps, groups
+    apps = tuple(app for app in apps if app.id not in disabled)
+    present = {app.id for app in apps}
+    groups = tuple(
+        group
+        for group in groups
+        if group.primary_id in present and group.backup_id in present
+    )
+    return apps, groups
+
+
 def _resolve_under_capps(rel: str) -> Path:
     p = Path(rel)
     if p.is_absolute():
@@ -308,7 +343,7 @@ def _load_config_from_json(path: Path) -> tuple[tuple[AppDef, ...], tuple[Failov
     return tuple(apps), tuple(groups)
 
 
-APPS, FAILOVER_GROUPS = _load_config_from_json(_config_path())
+APPS, FAILOVER_GROUPS = _apply_local_disabled(*_load_config_from_json(_config_path()))
 
 APPS_BY_ID = {a.id: a for a in APPS}
 FAILOVER_BY_PRIMARY_ID = {g.primary_id: g for g in FAILOVER_GROUPS}

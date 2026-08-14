@@ -95,3 +95,11 @@ Also accepts `interval_sec` + `duration_sec`, optional `group_id`. Reverts autom
 
 Set `CHEEAPPS_ROOT` if apps live somewhere other than the parent of `capps` (default `X:\`).
 Set `OLLAMA_URL` if Ollama is not on `http://127.0.0.1:11434`.
+
+Optional **`apps.local.json`** (gitignored) can hide apps from this checkout without changing `apps.json`:
+
+```json
+{
+  "disabled_app_ids": ["notetaker", "voice-dictation"]
+}
+```
