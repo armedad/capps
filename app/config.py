@@ -94,6 +94,9 @@ class FailoverGroup:
     interval_sec: float = 3600.0
     fail_threshold: int = 2
     failback_threshold: int = 2
+    # When False, health checks continue but start/stop/restart are skipped;
+    # the operator is notified that an action would have been taken instead.
+    auto_restart: bool = True
 
 
 def _ollama_base_url() -> str:
@@ -236,6 +239,8 @@ def _parse_failover_group(raw: dict[str, Any], *, source: str) -> FailoverGroup:
     if fail_threshold < 1 or failback_threshold < 1:
         raise ValueError(f"{source}: fail_threshold and failback_threshold must be >= 1")
 
+    auto_restart = bool(raw.get("auto_restart", True))
+
     return FailoverGroup(
         id=str(raw["id"]),
         primary_id=str(raw["primary_id"]),
@@ -243,6 +248,7 @@ def _parse_failover_group(raw: dict[str, Any], *, source: str) -> FailoverGroup:
         interval_sec=interval_sec,
         fail_threshold=fail_threshold,
         failback_threshold=failback_threshold,
+        auto_restart=auto_restart,
     )
 
 

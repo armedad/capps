@@ -13,6 +13,11 @@ from app.config import AppDef, health_check_label
 POLL_TIMEOUT_SEC = 60.0
 POLL_INTERVAL_SEC = 1.0
 HEALTH_TIMEOUT = 2.0
+# After a failed HTTP probe: wait, retry with a longer timeout, for up to this window
+# before treating the app as down (failover / verified probes only).
+HEALTH_RETRY_TIMEOUT = 10.0
+HEALTH_VERIFY_WAIT_SEC = 10.0
+HEALTH_VERIFY_WINDOW_SEC = 60.0
 
 
 @dataclass
@@ -67,15 +72,13 @@ async def _probe_process(app_def: AppDef) -> tuple[bool, dict]:
     return running, {"reachable": True, "running": running, "health_probe": "process"}
 
 
-async def _probe_raw(app_def: AppDef) -> tuple[bool | None, dict]:
-    """Return (running, fields). running=None means could not reach the health endpoint."""
-    if app_def.health_probe == "process":
-        running, extra = await _probe_process(app_def)
-        return running, extra
-
+async def _probe_http_once(
+    app_def: AppDef, *, timeout: float
+) -> tuple[bool | None, dict]:
+    """Single HTTP GET. running=None means could not reach the health endpoint."""
     url = _health_probe_url(app_def)
     try:
-        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url)
             running = resp.status_code == 200
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
@@ -84,11 +87,65 @@ async def _probe_raw(app_def: AppDef) -> tuple[bool | None, dict]:
     return running, {"reachable": True, "running": running, "health_probe": "http"}
 
 
+async def _probe_raw(app_def: AppDef) -> tuple[bool | None, dict]:
+    """Return (running, fields). running=None means could not reach the health endpoint."""
+    if app_def.health_probe == "process":
+        running, extra = await _probe_process(app_def)
+        return running, extra
+
+    return await _probe_http_once(app_def, timeout=HEALTH_TIMEOUT)
+
+
 async def probe_app(app_def: AppDef, status_fields: dict) -> dict:
     running, extra = await _probe_raw(app_def)
     if running is None:
         running = False
     return {**status_fields, "running": running, **extra}
+
+
+async def probe_app_verified(app_def: AppDef, status_fields: dict) -> dict:
+    """
+    HTTP health with anti-flap verification.
+
+    First probe uses HEALTH_TIMEOUT. On failure, wait HEALTH_VERIFY_WAIT_SEC and
+    retry with HEALTH_RETRY_TIMEOUT, repeating until HEALTH_VERIFY_WINDOW_SEC has
+    elapsed since the first failure — only then report running=False.
+
+    Process probes are unchanged (single check). Dashboard/status still uses
+    probe_app for a fast answer; failover watchdog uses this.
+    """
+    if app_def.health_probe == "process":
+        return await probe_app(app_def, status_fields)
+
+    running, extra = await _probe_http_once(app_def, timeout=HEALTH_TIMEOUT)
+    if running is True:
+        return {**status_fields, "running": True, **extra}
+
+    deadline = time.monotonic() + HEALTH_VERIFY_WINDOW_SEC
+    attempts = 1
+    while time.monotonic() < deadline:
+        await asyncio.sleep(HEALTH_VERIFY_WAIT_SEC)
+        if time.monotonic() >= deadline:
+            break
+        attempts += 1
+        running, extra = await _probe_http_once(
+            app_def, timeout=HEALTH_RETRY_TIMEOUT
+        )
+        if running is True:
+            extra = {
+                **extra,
+                "health_verified": True,
+                "health_verify_attempts": attempts,
+            }
+            return {**status_fields, "running": True, **extra}
+
+    extra = {
+        **extra,
+        "health_verified": True,
+        "health_verify_attempts": attempts,
+        "health_verify_failed": True,
+    }
+    return {**status_fields, "running": False, **extra}
 
 
 async def wait_for_condition(

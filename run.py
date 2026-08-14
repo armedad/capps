@@ -13,7 +13,7 @@ def main() -> None:
         action="store_true",
         help="start any managed app that is not already running, then serve the dashboard",
     )
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=os.environ.get("CAPPS_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 

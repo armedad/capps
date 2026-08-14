@@ -20,6 +20,30 @@ git config --global --add safe.directory X:/capps
 - **Start** launches when stopped; **Stop** / **Restart** call each app’s shutdown API where supported
 - **gauth**: Stop/Restart via `POST /api/local/shutdown` (loopback; respects `GAUTH_ALLOW_SHUTDOWN`)
 
+## App control API
+
+Single endpoint to start, stop, or restart any app in `apps.json` (same port **8000**, same behavior as the per-app routes):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/apps/control \
+  -H "Content-Type: application/json" \
+  -d "{\"app_id\": \"gauth\", \"action\": \"restart\"}"
+```
+
+`action` must be `start`, `stop`, or `restart`. Failover apps (e.g. `cursor-agent-telegram`) use the failover start/stop/restart logic. Per-app routes (`POST /api/apps/{app_id}/start`, etc.) still work.
+
+**Status** (same health probes as dashboard Refresh):
+
+```bash
+# All dashboard apps
+curl http://127.0.0.1:8000/api/apps/status
+
+# One app
+curl "http://127.0.0.1:8000/api/apps/status?app_id=gauth"
+```
+
+Returns `{"apps": [...], "results": [...]}`. Omit `app_id` for all apps; include it for a single app (failover-aware where configured).
+
 ## Run
 
 ```bat
@@ -50,9 +74,11 @@ Restart = shutdown, brief wait, then the app’s launch script again via capps (
 
 ## Failover watchdog
 
-When `apps.json` defines `failover_groups`, capps polls the **primary** app on an interval (default **1 hour**). After consecutive failed health checks (default 2), it starts the **backup** app and stops using the primary until failback.
+When `apps.json` defines `failover_groups`, capps polls the **primary** app on an interval (default **1 hour**). After consecutive failed health checks (default 2), it normally restarts the primary (then backup if that fails).
 
-- **cursor-agent Telegram**: primary `../cursor-agent`, backup `../cursor-agent-backup` (stable tag; see `BACKUP.md` there).
+Set `"auto_restart": false` on a group to keep health checks but **never** start/stop/restart. Instead capps notifies via Telegram (or HA persistent_notification) that it would have acted. Uses the primary app's `.env` (`TELEGRAM_HA_BOT_TOKEN` or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USER_IDS`; optional `HA_URL`/`HA_TOKEN`).
+
+- **cursor-agent Telegram**: primary `../cursor-agent`, backup `../cursor-agent-backup` (stable tag; see `BACKUP.md` there). Currently `auto_restart: false`.
 - Backup has `"autostart": false` — not started on dashboard **Start all** or `CAPPS_STARTUP`.
 - Only one instance should run (same port 8947 / Telegram token).
 - Disable polling with `CAPPS_WATCHDOG=0`.

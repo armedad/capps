@@ -260,6 +260,9 @@ footer {
   margin-top: 0.5rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 button.danger {
@@ -271,4 +274,134 @@ button.danger {
 button.danger:hover:not(:disabled) {
   background: #4a2a32;
   border-color: var(--down);
+}
+
+.footer-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.footer-link:hover {
+  text-decoration: underline;
+}
+
+.docs-page {
+  max-width: 52rem;
+}
+
+.docs-back {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.docs-back a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.docs-back a:hover {
+  text-decoration: underline;
+}
+
+.docs-main section {
+  margin-bottom: 2rem;
+}
+
+.docs-main h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.docs-main p {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.docs-main code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--text);
+}
+
+.docs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.docs-table th,
+.docs-table td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.docs-table th {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.docs-table td {
+  color: var(--muted);
+}
+
+.method {
+  display: inline-block;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: #0f1419;
+}
+
+.method.get {
+  background: #6cb6ff;
+}
+
+.method.post {
+  background: #3dd68c;
+}
+
+.method.delete {
+  background: #f07178;
+}
+
+.docs-code {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.docs-note {
+  font-size: 0.85rem;
+}
+
+.docs-footer {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.docs-footer a {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.docs-footer a:hover {
+  text-decoration: underline;
 }

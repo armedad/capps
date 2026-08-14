@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>c-apps API — documentation</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="docs-page">
+  <header>
+    <p class="docs-back"><a href="/">← c-apps dashboard</a></p>
+    <h1>API documentation</h1>
+    <p class="subtitle">HTTP endpoints on <code>http://127.0.0.1:8000</code> (loopback by default)</p>
+  </header>
+
+  <main class="docs-main">
+    <section>
+      <h2>Overview</h2>
+      <p>
+        capps manages local apps defined in <code>apps.json</code>. Most actions poll health for up to
+        <strong>60 seconds</strong> and return success or failure. Failover groups (e.g.
+        <code>cursor-agent-telegram</code>) use primary/backup logic on start, stop, restart, and status.
+      </p>
+      <p>
+        Prefer the unified <a href="#status">status</a> and <a href="#control">control</a> endpoints for
+        automation (Home Assistant, scripts). Per-app routes remain for the dashboard and backward compatibility.
+      </p>
+    </section>
+
+    <section id="status">
+      <h2>Status</h2>
+      <table class="docs-table">
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/apps/status</code></td>
+            <td>Refresh all dashboard apps. Returns <code>{"apps": [...], "results": [...]}</code>.</td>
+          </tr>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/apps/status?app_id={id}</code></td>
+            <td>Refresh one app (failover-aware). Same response shape with one entry each.</td>
+          </tr>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/apps</code></td>
+            <td>Same as <code>/api/apps/status</code> (all apps).</td>
+          </tr>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/apps/{app_id}</code></td>
+            <td>Refresh one app; returns a single result object (not wrapped in <code>apps</code>/<code>results</code>).</td>
+          </tr>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/apps/catalog</code></td>
+            <td>App metadata only — no health probes (used for initial dashboard layout).</td>
+          </tr>
+        </tbody>
+      </table>
+      <pre class="docs-code">curl http://127.0.0.1:8000/api/apps/status
+curl "http://127.0.0.1:8000/api/apps/status?app_id=gauth"</pre>
+    </section>
+
+    <section id="control">
+      <h2>Control</h2>
+      <table class="docs-table">
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/control</code></td>
+            <td>
+              JSON body: <code>{"app_id": "...", "action": "start"|"stop"|"restart"}</code>.
+              Same behavior as the per-app routes below.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/{app_id}/start</code></td>
+            <td>Start app if stopped.</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/{app_id}/stop</code></td>
+            <td>Stop a running app.</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/{app_id}/restart</code></td>
+            <td>Stop then start (via each app’s shutdown API where configured).</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/{app_id}/start-debug</code></td>
+            <td>Start with debug launcher when configured (not available for all apps).</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/start-all</code></td>
+            <td>Start every autostart dashboard app that is not running.</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/apps/stop-all</code></td>
+            <td>Stop every manageable dashboard app that is running.</td>
+          </tr>
+        </tbody>
+      </table>
+      <pre class="docs-code">curl -X POST http://127.0.0.1:8000/api/apps/control \
+  -H "Content-Type: application/json" \
+  -d "{\"app_id\": \"gauth\", \"action\": \"restart\"}"</pre>
+      <p class="docs-note">
+        Action responses include <code>success</code>, <code>message</code>, <code>elapsed_seconds</code>, and
+        an <code>app</code> object with current status fields.
+      </p>
+    </section>
+
+    <section id="failover">
+      <h2>Failover watchdog</h2>
+      <p>
+        When <code>failover_groups</code> is set in <code>apps.json</code>, capps polls primary health on an
+        interval (default 1 hour) and can fail over to a backup after consecutive failures. Disable with
+        <code>CAPPS_WATCHDOG=0</code>.
+      </p>
+      <table class="docs-table">
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method get">GET</span></td>
+            <td><code>/api/failover/schedule</code></td>
+            <td>List watchdog schedule state and any temporary overrides.</td>
+          </tr>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/failover/schedule</code></td>
+            <td>
+              Temporary faster polling. <strong>Loopback only.</strong> JSON: exactly one interval field
+              (<code>interval_sec</code> or <code>every_minutes</code>) and one duration field
+              (<code>duration_sec</code>, <code>for_hours</code>, or <code>for_minutes</code>). Optional
+              <code>group_id</code>.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="method delete">DELETE</span></td>
+            <td><code>/api/failover/schedule</code></td>
+            <td>
+              Clear override(s). <strong>Loopback only.</strong> Optional query
+              <code>?group_id=...</code>.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <pre class="docs-code">curl -X POST http://127.0.0.1:8000/api/failover/schedule \
+  -H "Content-Type: application/json" \
+  -d "{\"every_minutes\": 5, \"for_hours\": 2}"</pre>
+    </section>
+
+    <section id="local">
+      <h2>Local shutdown</h2>
+      <table class="docs-table">
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method post">POST</span></td>
+            <td><code>/api/local/shutdown</code></td>
+            <td>
+              Exit the capps server process (dashboard “Stop server”). <strong>Loopback only.</strong>
+              Returns <code>{"ok": true, "shutting_down": true}</code> before exit.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="app-ids">
+      <h2>App IDs</h2>
+      <p>
+        Use ids from <code>apps.json</code> (e.g. <code>gauth</code>, <code>notetaker</code>,
+        <code>voice-dictation</code>, <code>cursor-agent-telegram</code>). Backup failover entries are hidden
+        from the dashboard but may be referenced by id; API calls typically resolve to the primary failover app.
+      </p>
+    </section>
+  </main>
+
+  <footer class="docs-footer">
+    <a href="/">← Back to dashboard</a>
+  </footer>
+</body>
+</html>

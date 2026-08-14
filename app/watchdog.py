@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from app.config import APPS_BY_ID, FAILOVER_GROUPS, FailoverGroup
-from app.polling import probe_app
+from app.polling import probe_app_verified
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ class _GroupState:
     primary_failures: int = 0
     primary_successes: int = 0
     mode: str = "primary"  # "primary" | "backup"
+    # Once per down episode when auto_restart is disabled.
+    notified_would_restart: bool = False
 
 
 @dataclass
@@ -136,6 +138,7 @@ class FailoverWatchdog:
             "group_id": group_id,
             "default_interval_sec": group.interval_sec,
             "effective_interval_sec": self.effective_interval_sec(group_id),
+            "auto_restart": group.auto_restart,
             "override": None
             if override is None
             else {
@@ -156,6 +159,7 @@ class FailoverWatchdog:
         runtime.state.mode = mode
         runtime.state.primary_failures = 0
         runtime.state.primary_successes = 0
+        runtime.state.notified_would_restart = False
 
     async def start(self) -> None:
         if not self.groups or not _watchdog_enabled():
@@ -225,6 +229,7 @@ class FailoverWatchdog:
 
     async def _tick_group(self, group: FailoverGroup) -> None:
         from app.main import _app_status_fields, _perform_start, _perform_stop
+        from app.notify import notify_failover_would_act
 
         primary = APPS_BY_ID[group.primary_id]
         backup = APPS_BY_ID[group.backup_id]
@@ -232,15 +237,25 @@ class FailoverWatchdog:
 
         primary_fields = _app_status_fields(primary)
         backup_fields = _app_status_fields(backup)
-        primary_status = await probe_app(primary, primary_fields)
-        backup_status = await probe_app(backup, backup_fields)
+        # Verified HTTP: one miss is not enough — recheck for up to 60s before
+        # counting a failover failure (avoids false negatives during busy turns).
+        primary_status = await probe_app_verified(primary, primary_fields)
+        backup_status = await probe_app_verified(backup, backup_fields)
         primary_up = bool(primary_status.get("running"))
         backup_up = bool(backup_status.get("running"))
 
         if state.mode == "primary":
             if primary_up:
                 state.primary_failures = 0
+                state.notified_would_restart = False
                 if backup_up:
+                    if not group.auto_restart:
+                        logger.warning(
+                            "%s: backup running while primary healthy; "
+                            "auto_restart=false — would have stopped backup",
+                            group.id,
+                        )
+                        return
                     logger.warning(
                         "%s: backup running while primary healthy; stopping backup",
                         group.id,
@@ -259,16 +274,39 @@ class FailoverWatchdog:
                 )
                 return
 
+            if not group.auto_restart:
+                msg = (
+                    f"{group.id}: primary down after {state.primary_failures} checks; "
+                    "would have restarted primary (auto_restart=false)"
+                )
+                logger.warning("%s", msg)
+                if not state.notified_would_restart:
+                    await notify_failover_would_act(primary, msg)
+                    state.notified_would_restart = True
+                return
+
             logger.warning(
-                "%s: primary down after %s checks; activating backup",
+                "%s: primary down after %s checks; restarting primary first",
                 group.id,
                 state.primary_failures,
             )
             if backup_up:
-                state.mode = "backup"
+                await _perform_stop(backup, backup_fields)
+
+            primary_result = await _perform_start(primary, primary_fields)
+            if primary_result.get("success") and (
+                primary_result.get("running") or primary_result.get("skipped")
+            ):
+                state.mode = "primary"
                 state.primary_failures = 0
+                logger.info("%s: primary restarted", group.id)
                 return
 
+            logger.warning(
+                "%s: primary restart failed (%s); activating backup",
+                group.id,
+                primary_result.get("message", "unknown error"),
+            )
             result = await _perform_start(backup, backup_fields)
             if result.get("success") and (result.get("running") or result.get("skipped")):
                 state.mode = "backup"
@@ -276,7 +314,7 @@ class FailoverWatchdog:
                 logger.info("%s: backup activated", group.id)
             else:
                 logger.error(
-                    "%s: backup start failed — %s",
+                    "%s: backup start also failed — %s",
                     group.id,
                     result.get("message", "unknown error"),
                 )
@@ -285,11 +323,37 @@ class FailoverWatchdog:
         if not primary_up:
             state.primary_successes = 0
             if not backup_up:
-                logger.warning("%s: backup not running; restarting backup", group.id)
+                if not group.auto_restart:
+                    msg = (
+                        f"{group.id}: nothing healthy in backup mode; "
+                        "would have restarted primary (auto_restart=false)"
+                    )
+                    logger.warning("%s", msg)
+                    if not state.notified_would_restart:
+                        await notify_failover_would_act(primary, msg)
+                        state.notified_would_restart = True
+                    return
+                logger.warning(
+                    "%s: nothing healthy in backup mode; trying primary first",
+                    group.id,
+                )
+                primary_result = await _perform_start(primary, primary_fields)
+                if primary_result.get("success") and (
+                    primary_result.get("running") or primary_result.get("skipped")
+                ):
+                    state.mode = "primary"
+                    state.primary_failures = 0
+                    logger.info("%s: primary restored", group.id)
+                    return
+                logger.warning(
+                    "%s: primary restore failed; restarting backup",
+                    group.id,
+                )
                 await _perform_start(backup, backup_fields)
             return
 
         state.primary_successes += 1
+        state.notified_would_restart = False
         if state.primary_successes < group.failback_threshold:
             logger.debug(
                 "%s: primary up (%s/%s), staying on backup",
@@ -297,6 +361,20 @@ class FailoverWatchdog:
                 state.primary_successes,
                 group.failback_threshold,
             )
+            return
+
+        if not group.auto_restart:
+            msg = (
+                f"{group.id}: primary healthy; would have failed back from backup "
+                "(auto_restart=false)"
+            )
+            logger.info("%s", msg)
+            if backup_up and not state.notified_would_restart:
+                await notify_failover_would_act(primary, msg)
+                state.notified_would_restart = True
+            state.mode = "primary"
+            state.primary_successes = 0
+            state.primary_failures = 0
             return
 
         logger.info("%s: primary healthy; failing back from backup", group.id)

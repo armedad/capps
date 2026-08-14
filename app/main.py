@@ -38,6 +38,8 @@ from app.polling import (
     wait_for_condition,
 )
 from app.watchdog import watchdog
+from app.routers.app_control import router as app_control_router
+from app.routers.app_status import router as app_status_router
 from app.routers.local_shutdown import router as local_shutdown_router
 from app.routers.failover import router as failover_router
 
@@ -104,6 +106,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="c-apps", description="Local apps dashboard", lifespan=lifespan)
 app.include_router(local_shutdown_router, prefix="/api")
 app.include_router(failover_router, prefix="/api")
+app.include_router(app_status_router, prefix="/api")
+app.include_router(app_control_router, prefix="/api")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -353,16 +357,30 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api-docs")
+async def api_docs():
+    return FileResponse(STATIC_DIR / "docs.html")
+
+
 @app.get("/api/apps/catalog")
 async def catalog_apps():
     """App list without health probes (for initial dashboard layout)."""
     return {"apps": [_app_status_fields(a) for a in DASHBOARD_APPS]}
 
 
-@app.get("/api/apps")
-async def list_apps():
+async def dispatch_app_status(app_id: str | None = None) -> dict:
+    """Refresh health/status for one app or all dashboard apps."""
+    if app_id and app_id.strip():
+        app_def = _resolve_api_app(app_id.strip())
+        result = await _refresh_app(app_def)
+        return {"apps": [result["app"]], "results": [result]}
     results = await asyncio.gather(*(_refresh_app(a) for a in DASHBOARD_APPS))
     return {"apps": [r["app"] for r in results], "results": results}
+
+
+@app.get("/api/apps")
+async def list_apps():
+    return await dispatch_app_status(None)
 
 
 @app.get("/api/apps/{app_id}")
@@ -381,12 +399,88 @@ def _external_response(app_id: str, action: str) -> dict:
     }
 
 
+async def dispatch_app_action(app_id: str, action: str) -> dict:
+    """Run start, stop, or restart for one app (failover-aware where configured)."""
+    app_def = _resolve_api_app(app_id)
+
+    if action == "start":
+        if failover_group_for_app(app_def.id):
+            return await perform_failover_start(app_def)
+        return await _perform_start(app_def)
+
+    if action == "stop":
+        if failover_group_for_app(app_def.id):
+            return await perform_failover_stop(app_def)
+        return await _perform_stop(app_def)
+
+    if app_def.external or app_def.control == "stub":
+        return {
+            "id": app_def.id,
+            "action": "restart",
+            "success": False,
+            "not_implemented": True,
+            "message": EXTERNAL_MSG if app_def.external else NOT_IMPLEMENTED_MSG,
+        }
+
+    if failover_group_for_app(app_def.id):
+        return await perform_failover_restart(app_def)
+
+    fields = _app_status_fields(app_def)
+    initial = await probe_app(app_def, fields)
+    deadline = time.monotonic() + POLL_TIMEOUT_SEC
+
+    if initial["running"]:
+        await _shutdown_app(app_def)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return outcome_response(
+                app_def.id,
+                "restart",
+                await wait_for_condition(
+                    app_def, fields, goal_running=False, action="restart", timeout_sec=0.1
+                ),
+                phase="stop",
+            )
+        stop_outcome = await wait_for_condition(
+            app_def,
+            fields,
+            goal_running=False,
+            action="restart",
+            timeout_sec=remaining,
+        )
+        if not stop_outcome.success:
+            return outcome_response(app_def.id, "restart", stop_outcome, phase="stop")
+
+    if not (app_def.app_dir / app_def.launch_script).is_file():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Launch script missing: {app_def.app_dir / app_def.launch_script}",
+        )
+
+    await _launch_app_process(app_def)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return outcome_response(
+            app_def.id,
+            "restart",
+            await wait_for_condition(
+                app_def, fields, goal_running=True, action="restart", timeout_sec=0.1
+            ),
+            phase="start",
+        )
+    start_outcome = await wait_for_condition(
+        app_def,
+        fields,
+        goal_running=True,
+        action="restart",
+        timeout_sec=remaining,
+    )
+    return outcome_response(app_def.id, "restart", start_outcome, phase="start")
+
+
 @app.post("/api/apps/{app_id}/start")
 async def start_app(app_id: str):
-    app_def = _resolve_api_app(app_id)
-    if failover_group_for_app(app_def.id):
-        return await perform_failover_start(app_def)
-    return await _perform_start(app_def)
+    return await dispatch_app_action(app_id, "start")
 
 
 @app.post("/api/apps/{app_id}/start-debug")
@@ -405,10 +499,7 @@ async def start_all_apps():
 
 @app.post("/api/apps/{app_id}/stop")
 async def stop_app(app_id: str):
-    app_def = _resolve_api_app(app_id)
-    if failover_group_for_app(app_def.id):
-        return await perform_failover_stop(app_def)
-    return await _perform_stop(app_def)
+    return await dispatch_app_action(app_id, "stop")
 
 
 @app.post("/api/apps/stop-all")
@@ -441,68 +532,4 @@ async def stop_all_apps():
 
 @app.post("/api/apps/{app_id}/restart")
 async def restart_app(app_id: str):
-    app_def = _resolve_api_app(app_id)
-
-    if app_def.external or app_def.control == "stub":
-        return {
-            "id": app_id,
-            "action": "restart",
-            "success": False,
-            "not_implemented": True,
-            "message": EXTERNAL_MSG if app_def.external else NOT_IMPLEMENTED_MSG,
-        }
-
-    if failover_group_for_app(app_def.id):
-        return await perform_failover_restart(app_def)
-
-    fields = _app_status_fields(app_def)
-    initial = await probe_app(app_def, fields)
-    deadline = time.monotonic() + POLL_TIMEOUT_SEC
-
-    if initial["running"]:
-        await _shutdown_app(app_def)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return outcome_response(
-                app_id,
-                "restart",
-                await wait_for_condition(
-                    app_def, fields, goal_running=False, action="restart", timeout_sec=0.1
-                ),
-                phase="stop",
-            )
-        stop_outcome = await wait_for_condition(
-            app_def,
-            fields,
-            goal_running=False,
-            action="restart",
-            timeout_sec=remaining,
-        )
-        if not stop_outcome.success:
-            return outcome_response(app_id, "restart", stop_outcome, phase="stop")
-
-    if not (app_def.app_dir / app_def.launch_script).is_file():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Launch script missing: {app_def.app_dir / app_def.launch_script}",
-        )
-
-    await _launch_app_process(app_def)
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        return outcome_response(
-            app_id,
-            "restart",
-            await wait_for_condition(
-                app_def, fields, goal_running=True, action="restart", timeout_sec=0.1
-            ),
-            phase="start",
-        )
-    start_outcome = await wait_for_condition(
-        app_def,
-        fields,
-        goal_running=True,
-        action="restart",
-        timeout_sec=remaining,
-    )
-    return outcome_response(app_id, "restart", start_outcome, phase="start")
+    return await dispatch_app_action(app_id, "restart")
